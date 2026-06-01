@@ -1,7 +1,6 @@
 # main.py
 """
 Finance Tracker API
-Run: uvicorn main:app --reload
 """
 
 from contextlib import asynccontextmanager
@@ -16,10 +15,17 @@ from db import init_db
 # ─────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize database on startup"""
-    init_db()
-    print("✅ Database initialized")
+    """Initialize database on startup (gracefully handle errors)"""
+    try:
+        init_db()
+        print("✅ Database initialized successfully")
+    except Exception as e:
+        # Don't fail app startup if DB is unavailable
+        print(f"⚠️ Database initialization failed: {str(e)[:100]}")
+        print("⚠️ App will run without database - will reconnect on next request")
+    
     yield
+    
     print("👋 Application shutdown")
 
 
@@ -30,7 +36,7 @@ app = FastAPI(
     title="💰 Finance Tracker API",
     description="Track your personal finances via REST API",
     version="1.0.0",
-    lifespan=lifespan  # ← New pattern
+    lifespan=lifespan
 )
 
 
