@@ -1,23 +1,36 @@
-from sqlalchemy import  Column, Integer, String, Float
+# models/database_models.py
+"""
+SQLAlchemy models for database
+Defines the database schema
+"""
+
+from sqlalchemy import Column, String, Float, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 import enum
 
-base = declarative_base()
 
-class TransactionType(str,enum.Enum):
-    INCOME = "income"
-    EXPENSE = "expense"
+# ─────────────────────────────────────
+# CREATE BASE
+# This is what gets imported in db.py
+# ─────────────────────────────────────
+Base = declarative_base()
 
-class Transaction(base):
+
+# ─────────────────────────────────────
+# TRANSACTION MODEL
+# Maps to PostgreSQL table
+# ─────────────────────────────────────
+class TransactionModel(Base):
+    """Database model for transactions"""
     __tablename__ = "transactions"
 
-    id = Column(String, primary_key=True)
-    date = Column(String, nullable=False)
-    type = Column(String, nullable=False)
-    category = Column(String, nullable=False)
-    amount = Column(Float, nullable=False)
-    description = Column(String)
+    id = Column(String, primary_key=True, index=True)
+    date = Column(DateTime, default=datetime.utcnow)
+    type = Column(String, index=True)
+    category = Column(String)
+    amount = Column(Float)
+    description = Column(String, default="")
 
     class Config:
         from_attributes = True
