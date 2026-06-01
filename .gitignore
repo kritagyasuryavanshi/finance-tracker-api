@@ -1,0 +1,15 @@
+# .gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Data
+data/transactions.csv
+
+# OS
+.DS_Store
+Thumbs.db
