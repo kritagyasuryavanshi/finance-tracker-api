@@ -2,58 +2,59 @@
 """
 Finance Tracker API
 Run: uvicorn main:app --reload
-Docs: http://localhost:8000/docs
 """
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers import transactions
+from db import init_db
 
 
-# ─────────────────────────────────────────
-# Create FastAPI App
-# ─────────────────────────────────────────
+# ─────────────────────────────────────
+# LIFESPAN: Startup & Shutdown
+# ─────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize database on startup"""
+    init_db()
+    print("✅ Database initialized")
+    yield
+    print("👋 Application shutdown")
+
+
+# ─────────────────────────────────────
+# CREATE APP WITH LIFESPAN
+# ─────────────────────────────────────
 app = FastAPI(
     title="💰 Finance Tracker API",
-    description="""
-Track your personal finances via REST API.
-
-## What you can do:
-
-* **Create** income and expense transactions
-* **Read** all transactions or filter by type
-* **Delete** transactions
-* **Summary** get total income, expenses and balance
-
-## Built by
-Kritagya Suryavanshi | Full Stack AI Engineer
-    """,
-    version="1.0.0"
+    description="Track your personal finances via REST API",
+    version="1.0.0",
+    lifespan=lifespan  # ← New pattern
 )
 
 
-# ─────────────────────────────────────────
-# CORS Middleware
-# This lets your Next.js frontend call this API
-# ─────────────────────────────────────────
+# ─────────────────────────────────────
+# CORS MIDDLEWARE
+# ─────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Production: specify your frontend URL
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# ─────────────────────────────────────────
-# Include Routers
-# ─────────────────────────────────────────
+# ─────────────────────────────────────
+# INCLUDE ROUTERS
+# ─────────────────────────────────────
 app.include_router(transactions.router)
 
 
-# ─────────────────────────────────────────
-# Root Endpoint
-# ─────────────────────────────────────────
+# ─────────────────────────────────────
+# HEALTH CHECK ENDPOINTS
+# ─────────────────────────────────────
 @app.get("/", tags=["Health"])
 async def root():
     """API info and health check"""
@@ -62,17 +63,10 @@ async def root():
         "version": "1.0.0",
         "status": "✅ running",
         "docs": "http://localhost:8000/docs",
-        "endpoints": {
-            "all transactions": "GET /transactions",
-            "create transaction": "POST /transactions",
-            "get summary": "GET  /transactions/summary",
-            "get one": "GET /transactions/{id}",
-            "delete": "DELETE /transactions/{id}"
-        }
     }
 
 
 @app.get("/health", tags=["Health"])
 async def health():
-    """Simple health check for deployment"""
+    """Simple health check"""
     return {"status": "healthy"}
