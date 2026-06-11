@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers import transactions
 from db import init_db
+from routers import ai  
 
 
 # ─────────────────────────────────────
@@ -56,6 +57,7 @@ app.add_middleware(
 # INCLUDE ROUTERS
 # ─────────────────────────────────────
 app.include_router(transactions.router)
+app.include_router(ai.router)
 
 
 # ─────────────────────────────────────
