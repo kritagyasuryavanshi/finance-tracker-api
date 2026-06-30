@@ -21,10 +21,9 @@ from langchain_community.document_loaders import CSVLoader, PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_classic.chains import RetrievalQA
-from langchain.agents import create_react_agent, AgentExecutor
-from langchain import hub
-from langchain.tools import Tool, tool
-
+from langchain_classic.agents import create_react_agent, AgentExecutor
+from langchain_classic import hub
+from langchain_core.tools import Tool, tool
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -35,7 +34,7 @@ load_dotenv()
 
 # Initialize Gemini
 llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",
+    model="gemini-2.5-flash",
     # ↑ Fast and cost-effective
     
     temperature=0.7,
@@ -44,7 +43,7 @@ llm = ChatGoogleGenerativeAI(
 
 # Initialize embeddings (for vector DB)
 embeddings = GoogleGenerativeAIEmbeddings(
-    model="models/embedding-001"
+    model="gemini-embedding-001"
     # ↑ Converts text to vectors
 )
 
@@ -200,6 +199,23 @@ def query_documents(question: str) -> dict:
 # ─────────────────────────────────────────────────────
 
 @tool
+def answer_general_question(question: str) -> str:
+    """
+    Answer any general question NOT related to the user's
+    financial transactions or data — general knowledge,
+    explanations, casual conversation, anything else.
+    
+    Use this when the question is NOT about searching
+    transactions, analyzing spending, or financial summaries.
+    """
+    
+    response = llm.invoke(question)
+    # ↑ Direct call to Gemini, no tool/retrieval needed
+    #   Just answer like a normal chatbot would
+    
+    return response.content
+
+@tool
 def search_transactions(query: str) -> str:
     """
     Search transactions by description
@@ -229,26 +245,35 @@ def analyze_spending_patterns(category: str) -> str:
         return "No data loaded"
     
     query = f"spending in {category}"
-    results = vectorstore.similarity_search(query, k=10)
+    results = vectorstore.similarity_search(query, k=15)
     
-    # Calculate total from results
-    total = 0
-    count = 0
+    if not results:
+        return f"No transactions found related to {category}"
     
-    for doc in results:
-        # Extract amount from document
-        # (this is simplified - real version would parse better)
-        content = doc.page_content
-        if "Amount:" in content:
-            try:
-                amount = float(content.split("Amount:")[-1].split(",")[0].strip())
-                total += amount
-                count += 1
-            except:
-                pass
+    # Let the AI read the raw documents and calculate
+    # instead of brittle string-splitting on exact column names
+    raw_data = "\n".join([doc.page_content for doc in results])
     
-    return f"Found {count} transactions in {category} totaling ${total:.2f}"
+    prompt = f"""Below are financial transaction records in raw text form.
+The column names and format may vary (e.g. "Amount" or "amount" or "value",
+"Category" or "type" or "tag", etc). Read them carefully regardless of
+exact column naming.
 
+RECORDS:
+{raw_data}
+
+Calculate the total amount spent specifically related to "{category}"
+(include similar/related terms, e.g. "food" should include "groceries",
+"restaurant", "dining" etc if present).
+
+Respond in this exact format:
+Found [count] transactions related to {category} totaling $[total]
+
+If you cannot determine amounts from the data, say so clearly instead of guessing.
+"""
+    
+    response = llm.invoke(prompt)
+    return response.content
 
 @tool
 def get_summary_stats() -> str:
@@ -261,38 +286,33 @@ def get_summary_stats() -> str:
     if vectorstore is None:
         return "No data loaded"
     
-    # Retrieve all documents
     results = vectorstore.similarity_search("transactions", k=100)
     
-    total_income = 0
-    total_expense = 0
+    if not results:
+        return "No transaction data found"
     
-    for doc in results:
-        content = doc.page_content.lower()
-        
-        # Look for income/expense markers
-        if "income" in content:
-            try:
-                amount = float(content.split("amount:")[-1].split(",")[0].strip())
-                total_income += amount
-            except:
-                pass
-        elif "expense" in content:
-            try:
-                amount = float(content.split("amount:")[-1].split(",")[0].strip())
-                total_expense += amount
-            except:
-                pass
+    raw_data = "\n".join([doc.page_content for doc in results])
     
-    balance = total_income - total_expense
-    
-    return f"""
-    Financial Summary:
-    - Total Income: ${total_income:.2f}
-    - Total Expenses: ${total_expense:.2f}
-    - Balance: ${balance:.2f}
-    """
+    prompt = f"""Below are financial transaction records in raw text form.
+The column names and format may vary across rows or files. Read them
+carefully regardless of exact column naming (e.g. "Amount" vs "amount"
+vs "value", "Type" vs "category" indicating income/expense, etc).
 
+RECORDS:
+{raw_data}
+
+Calculate and respond in this exact format:
+Total Income: $[amount]
+Total Expenses: $[amount]
+Balance: $[amount]
+
+If the data doesn't clearly indicate income vs expense, make a reasonable
+judgment (e.g. salary/refund/deposit = income, purchases/bills = expense)
+and note your assumption briefly.
+"""
+    
+    response = llm.invoke(prompt)
+    return response.content
 
 def create_agent():
     """
@@ -305,20 +325,54 @@ def create_agent():
     tools = [
         search_transactions,
         analyze_spending_patterns,
-        get_summary_stats
+        get_summary_stats,
+        answer_general_question
     ]
     
-    # Use ReAct prompt (Reasoning + Acting)
-    prompt = hub.pull("hwchase17/react")
+    # Write our own ReAct prompt (no external download needed)
+    # ReAct = the agent THINKS, then ACTS, then OBSERVES, repeat
+    from langchain_core.prompts import PromptTemplate
+    
+    react_template = """You are a helpful AI assistant for a personal finance app.
+
+IMPORTANT CONTEXT: The user may have already uploaded a CSV document
+containing their financial transactions. This data is NOT a separate
+"document" you read directly — instead, it has been processed and is
+searchable through your tools (search_transactions, analyze_spending_patterns,
+get_summary_stats). If the user asks about "the document", "my data",
+"my file", or "what I uploaded", treat this as a request to search or
+summarize their transaction data using your tools.
+
+Answer the following question as best you can. You have access to the following tools:
+
+{tools}
+
+Use the following format:
+
+Question: the input question you must answer
+Thought: you should always think about what to do
+Action: the action to take, should be one of [{tool_names}]
+Action Input: the input to the action
+Observation: the result of the action
+... (this Thought/Action/Action Input/Observation can repeat N times)
+Thought: I now know the final answer
+Final Answer: the final answer to the original input question
+
+Begin!
+
+Question: {input}
+Thought:{agent_scratchpad}"""
+
+    prompt = PromptTemplate.from_template(react_template)
     
     # Create agent
     agent = create_react_agent(llm, tools, prompt)
-    
     # Create executor
     executor = AgentExecutor(
         agent=agent,
         tools=tools,
         verbose=True,
+        handle_parsing_errors=True,
         # ↑ Show agent's thinking process
     )
     
