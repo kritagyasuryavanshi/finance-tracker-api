@@ -6,7 +6,7 @@ These connect your financial data with Gemini AI
 Each endpoint = one AI feature
 """
 
-from fastapi import APIRouter, HTTPException, Depends , File, UploadFile,F
+from fastapi import APIRouter, HTTPException, Depends , File, UploadFile
 # APIRouter    = creates grouped routes
 # HTTPException = return error responses
 # Depends      = dependency injection (for DB)
