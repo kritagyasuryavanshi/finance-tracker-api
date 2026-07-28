@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from db import get_db
 import database
+from routers.auth import get_current_user
 from models.transaction import (
     Transaction,
     TransactionCreate,
@@ -20,7 +21,8 @@ router = APIRouter(
 @router.get("/", response_model=List[Transaction])
 async def get_all_transactions(
     transaction_type: Optional[str] = Query(default=None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+     current_user: dict = Depends(get_current_user)
 ):
     """Get all transactions"""
     if transaction_type and transaction_type not in ["income", "expense"]:
@@ -29,20 +31,20 @@ async def get_all_transactions(
             detail="transaction_type must be 'income' or 'expense'"
         )
     
-    transactions = database.get_all_transactions(db, transaction_type)
+    transactions = database.get_all_transactions(db, transaction_type,user_id=current_user["id"])
     return transactions
 
 
 @router.get("/summary", response_model=TransactionSummary)
-async def get_summary(db: Session = Depends(get_db)):
+async def get_summary(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """Get financial summary"""
-    return database.get_summary(db)
+    return database.get_summary(db,user_id=current_user["id"])
 
 
 @router.get("/{transaction_id}", response_model=Transaction)
-async def get_transaction(transaction_id: str, db: Session = Depends(get_db)):
+async def get_transaction(transaction_id: str, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """Get single transaction"""
-    transaction = database.get_transaction_by_id(db, transaction_id)
+    transaction = database.get_transaction_by_id(db, transaction_id,user_id=current_user["id"])
     
     if not transaction:
         raise HTTPException(status_code=404, detail="Not found")
@@ -53,14 +55,16 @@ async def get_transaction(transaction_id: str, db: Session = Depends(get_db)):
 @router.post("/", response_model=Transaction, status_code=201)
 async def create_transaction(
     transaction: TransactionCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     """Create new transaction"""
     data = {
         "type": transaction.type.value,
         "category": transaction.category,
         "amount": transaction.amount,
-        "description": transaction.description or ""
+        "description": transaction.description or "",
+        "user_id": current_user["id"]
     }
     
     return database.create_transaction(db, data)
@@ -69,10 +73,11 @@ async def create_transaction(
 @router.delete("/{transaction_id}", response_model=DeleteResponse)
 async def delete_transaction(
     transaction_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     """Delete transaction"""
-    deleted = database.delete_transaction(db, transaction_id)
+    deleted = database.delete_transaction(db, transaction_id, user_id=current_user["id"])
     
     if not deleted:
         raise HTTPException(status_code=404, detail="Not found")

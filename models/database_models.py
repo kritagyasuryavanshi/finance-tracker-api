@@ -31,6 +31,7 @@ class TransactionModel(Base):
     category = Column(String)
     amount = Column(Float)
     description = Column(String, default="")
+    user_id = Column(String, index=True)  # Foreign key to users table
 
     class Config:
         from_attributes = True

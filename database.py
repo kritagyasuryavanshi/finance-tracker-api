@@ -1,96 +1,3 @@
-# import csv
-# import os
-# import uuid
-# from datetime import datetime
-# from typing import List, Dict,Optional
-
-
-
-# TRANSACTON_FILE = "data/transactions.csv"
-# FIELDNAMES = ["id","date","type","category","amount","description"]
-
-
-# def _ensure_data_dir():
-#     os.makedirs("data",exist_ok=True)
-
-# def get_all_transactions() ->List[Dict]:
-#     _ensure_data_dir()
-    
-#     if not os.path.isfile(TRANSACTON_FILE):
-#         return []
-#     transactions = []
-#     with open(TRANSACTON_FILE,mode="r") as file:
-#         reader = csv.DictReader(file)
-#         for row in reader:
-#             row['amount'] = float(row["amount"])
-#             transactions.append(row)
-#     return transactions
-
-# def get_transatin_by_id(transaction_id:str) -> Optional[Dict]:
-#     transactions = get_all_transactions()
-#     for t in transactions:
-#         if t["id"]==transaction_id:
-#             return t
-#     return None
-
-# def create_transaction(data:Dict)->Dict:
-#     _ensure_data_dir()
-
-#     transaction ={
-#         "id": str(uuid.uuid4()),
-#         "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-#         "type": data["type"],
-#         "category": data["category"],
-#         "amount": data["amount"],
-#         "description": data.get("description","")
-#     }
-
-
-#     file_exists = os.path.isfile(TRANSACTON_FILE)
-#     with open(TRANSACTON_FILE,mode="a",newline="") as file:
-#         writer = csv.DictWriter(file,fieldnames=FIELDNAMES)
-#         if not file_exists:
-#             writer.writeheader()
-#         writer.writerow(transaction)
-
-#     return transaction
-
-
-# def delete_transaction(transaction_id:str)->bool:
-#     transactions = get_all_transactions()
-#     original_count = len(transactions)
-
-#     updated_transactions = [t for t in transactions if  t["id"]!=transaction_id]
-    
-#     if len(updated_transactions) == original_count:
-#         return False
-    
-#     with open(TRANSACTON_FILE,mode="w",newline="") as file:
-#         writer = csv.DictWriter(file,fieldnames=FIELDNAMES)
-#         writer.writeheader()
-#         writer.writerows(updated_transactions)
-#     return True
-
-# def get_summary() -> Dict:
-#     """Calculate total income, expenses and balance"""
-#     transactions = get_all_transactions()
-
-#     total_income = sum(
-#         t['amount'] for t in transactions
-#         if t['type'] == 'income'
-#     )
-#     total_expense = sum(
-#         t['amount'] for t in transactions
-#         if t['type'] == 'expense'
-#     )
-
-#     return {
-#         "total_income": round(total_income, 2),
-#         "total_expense": round(total_expense, 2),
-#         "balance": round(total_income - total_expense, 2),
-#         "transaction_count": len(transactions)
-#     }
-
 # database.py
 """
 Database operations using SQLAlchemy + PostgreSQL
@@ -98,9 +5,10 @@ Database operations using SQLAlchemy + PostgreSQL
 
 import uuid
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Dict
 from sqlalchemy.orm import Session
 from models.database_models import TransactionModel
+from models.user import UserModel
 from db import SessionLocal
 
 
@@ -109,9 +17,20 @@ def get_db() -> Session:
     return SessionLocal()
 
 
-def get_all_transactions(db: Session, transaction_type: Optional[str] = None) -> List[dict]:
+# ─────────────────────────────────────
+# TRANSACTION OPERATIONS
+# ─────────────────────────────────────
+
+def get_all_transactions(
+    db: Session,
+    transaction_type: Optional[str] = None,
+    user_id: Optional[str] = None
+) -> List[dict]:
     """Get all transactions"""
     query = db.query(TransactionModel)
+    
+    if user_id:
+        query = query.filter(TransactionModel.user_id == user_id)
     
     if transaction_type:
         query = query.filter(TransactionModel.type == transaction_type)
@@ -131,11 +50,20 @@ def get_all_transactions(db: Session, transaction_type: Optional[str] = None) ->
     ]
 
 
-def get_transaction_by_id(db: Session, transaction_id: str) -> Optional[dict]:
+def get_transaction_by_id(
+    db: Session,
+    transaction_id: str,
+    user_id: Optional[str] = None  # ← Optional now
+) -> Optional[dict]:
     """Get single transaction by ID"""
-    transaction = db.query(TransactionModel).filter(
+    query = db.query(TransactionModel).filter(
         TransactionModel.id == transaction_id
-    ).first()
+    )
+    
+    if user_id:
+        query = query.filter(TransactionModel.user_id == user_id)
+    
+    transaction = query.first()
     
     if not transaction:
         return None
@@ -159,6 +87,7 @@ def create_transaction(db: Session, data: dict) -> dict:
         category=data["category"],
         amount=data["amount"],
         description=data.get("description", ""),
+        user_id=data.get("user_id")  # ← .get() so it's optional
     )
     
     db.add(transaction)
@@ -175,35 +104,109 @@ def create_transaction(db: Session, data: dict) -> dict:
     }
 
 
-def delete_transaction(db: Session, transaction_id: str) -> bool:
+def delete_transaction(
+    db: Session,
+    transaction_id: str,
+    user_id: Optional[str] = None
+) -> bool:
     """Delete transaction"""
-    transaction = db.query(TransactionModel).filter(
+    # Build query first, filter after
+    query = db.query(TransactionModel).filter(
         TransactionModel.id == transaction_id
-    ).first()
+    )
+    
+    if user_id:
+        query = query.filter(TransactionModel.user_id == user_id)
+    
+    transaction = query.first()
     
     if not transaction:
         return False
     
     db.delete(transaction)
     db.commit()
-    
     return True
 
 
-def get_summary(db: Session) -> dict:
+def get_summary(
+    db: Session,
+    user_id: Optional[str] = None
+) -> dict:
     """Get financial summary"""
-    transactions = db.query(TransactionModel).all()
+    query = db.query(TransactionModel)
     
-    total_income = sum(
-        t.amount for t in transactions if t.type == "income"
-    )
-    total_expense = sum(
-        t.amount for t in transactions if t.type == "expense"
-    )
+    if user_id:
+        query = query.filter(TransactionModel.user_id == user_id)
+    
+    transactions = query.all()
+    
+    total_income = sum(t.amount for t in transactions if t.type == "income")
+    total_expense = sum(t.amount for t in transactions if t.type == "expense")
     
     return {
         "total_income": round(total_income, 2),
         "total_expense": round(total_expense, 2),
         "balance": round(total_income - total_expense, 2),
         "transaction_count": len(transactions),
+    }
+
+
+# ─────────────────────────────────────
+# USER OPERATIONS
+# ─────────────────────────────────────
+
+def get_user_by_email(db: Session, email: str) -> Optional[Dict]:
+    """Find user by email"""
+    user = db.query(UserModel).filter(
+        UserModel.email == email
+    ).first()
+    
+    if not user:
+        return None
+    
+    return {
+        "id": user.id,
+        "email": user.email,
+        "password_hash": user.password_hash,
+        "created_at": str(user.created_at)
+    }
+
+
+def get_user_by_id(db: Session, user_id: str) -> Optional[Dict]:
+    """Find user by ID"""
+    user = db.query(UserModel).filter(
+        UserModel.id == user_id
+    ).first()
+    
+    if not user:
+        return None
+    
+    return {
+        "id": user.id,
+        "email": user.email,
+        "created_at": str(user.created_at)
+        # ↑ NO password_hash! Never expose it!
+    }
+
+
+def create_user(db: Session, email: str, password_hash: str) -> Dict:
+    """Create new user"""
+    existing = get_user_by_email(db, email)
+    if existing:
+        raise ValueError("Email already registered")
+    
+    user = UserModel(
+        id=str(uuid.uuid4()),
+        email=email,
+        password_hash=password_hash
+    )
+    
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    
+    return {
+        "id": user.id,
+        "email": user.email,
+        "created_at": str(user.created_at)
     }

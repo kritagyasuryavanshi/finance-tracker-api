@@ -8,7 +8,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from routers import transactions
 from db import init_db
-from routers import ai  
+from routers import ai
+from routers import auth    
 
 
 # ─────────────────────────────────────
@@ -58,7 +59,7 @@ app.add_middleware(
 # ─────────────────────────────────────
 app.include_router(transactions.router)
 app.include_router(ai.router)
-
+app.include_router(auth.router)
 
 # ─────────────────────────────────────
 # HEALTH CHECK ENDPOINTS
