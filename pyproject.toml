@@ -15,6 +15,7 @@ dependencies = [
     "langchain-community>=0.4.2",
     "langchain-google-genai>=4.2.6",
     "langchain-text-splitters>=1.1.2",
+    "langgraph>=1.2.7",
     "passlib>=1.7.4",
     "psycopg2-binary>=2.9.12",
     "pydantic>=2.13.4",

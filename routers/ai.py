@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Depends , File, UploadFile
 # APIRouter    = creates grouped routes
 # HTTPException = return error responses
 # Depends      = dependency injection (for DB)
-
+from services.finance_agent import run_finance_analysis
 from sqlalchemy.orm import Session
 # Session = database connection type
 
@@ -32,7 +32,7 @@ from services.ai_service import (
     get_spending_advice
 )
 # Import our 3 AI functions
-
+from routers.auth import get_current_user
 
 import shutil
 from pathlib import Path
@@ -78,6 +78,17 @@ class ChatRequest(BaseModel):
     # ↑ Previous messages for AI memory
     # Optional = not required
     # Default = empty list
+
+
+class DeepAnalysisResponse(BaseModel):
+    """Response from LangGraph agent"""
+    final_output: str
+    financial_health: str
+    alert_message: str
+    summary: dict
+    error: Optional[str] = None
+
+
 
 
 class AdviceRequest(BaseModel):
@@ -443,4 +454,44 @@ async def hybrid_search_documents(request: DocumentQueryRequest):
     except Exception as e:
         return DocumentQueryResponse(
             answer=f"Error: {str(e)}"
+        )
+
+
+@router.get("/deep-analysis", response_model=DeepAnalysisResponse)
+async def deep_analysis(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+    # ↑ Protected! Must be logged in
+):
+    """
+    Run complete LangGraph financial intelligence analysis
+    
+    Runs a multi-node AI graph:
+    1. Fetches user's transactions
+    2. Analyzes spending patterns with AI
+    3. Determines financial health
+    4. Generates personalized report
+    5. Returns formatted output
+    
+    Takes 5-15 seconds (multiple AI calls)
+    Much more detailed than /ai/insights
+    """
+    
+    try:
+        result = run_finance_analysis(current_user["id"])
+        # ↑ Pass user_id to graph
+        #   Graph handles everything else!
+        
+        return DeepAnalysisResponse(
+            final_output=result["final_output"],
+            financial_health=result["financial_health"],
+            alert_message=result["alert_message"],
+            summary=result["summary"],
+            error=result.get("error")
+        )
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Analysis failed: {str(e)}"
         )
