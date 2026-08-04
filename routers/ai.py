@@ -46,6 +46,16 @@ from services.langchain_service import (
     hybrid_search
 )
 
+from services.finance_crew import run_finance_crew
+
+
+# ADD THIS RESPONSE MODEL:
+class CrewAnalysisResponse(BaseModel):
+    """Response from CrewAI multi-agent analysis"""
+    report: str
+    success: bool = True
+
+
 
 
 
@@ -494,4 +504,49 @@ async def deep_analysis(
         raise HTTPException(
             status_code=500,
             detail=f"Analysis failed: {str(e)}"
+        )
+
+
+    
+@router.get("/crew-analysis", response_model=CrewAnalysisResponse)
+async def crew_analysis(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Run multi-agent CrewAI financial analysis
+    
+    THREE specialized AI agents work together:
+    1. Data Analyst - analyzes raw transaction data
+    2. Financial Advisor - creates personalized advice
+    3. Report Writer - writes beautiful final report
+    
+    Takes 30-60 seconds (multiple AI calls)
+    Returns professional financial report
+    """
+    
+    try:
+        # Get user's data from database
+        transactions = database.get_all_transactions(
+            db,
+            user_id=current_user["id"]
+        )
+        summary = database.get_summary(
+            db,
+            user_id=current_user["id"]
+        )
+        
+        # Run the crew!
+        report = run_finance_crew(
+            transactions=transactions,
+            summary=summary,
+            user_id=current_user["id"]
+        )
+        
+        return CrewAnalysisResponse(report=report)
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Crew analysis failed: {str(e)}"
         )
