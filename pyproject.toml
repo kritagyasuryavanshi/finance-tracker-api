@@ -1,7 +1,7 @@
 [project]
 name = "finance-api"
 version = "0.1.0"
-description = "Add your description here"
+description = "AI-powered personal finance API: FastAPI, JWT auth, Gemini, LangChain RAG, LangGraph and CrewAI agents"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -27,3 +27,7 @@ dependencies = [
     "sqlalchemy>=2.0.50",
     "uvicorn[standard]>=0.48.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning", "ignore::FutureWarning", "ignore::UserWarning"]
