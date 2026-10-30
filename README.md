@@ -26,7 +26,7 @@ flowchart LR
 |---|---|
 | **Auth** | Signup / login with bcrypt-hashed passwords, 24h JWT access tokens, `/auth/me` |
 | **Transactions** | Create, list, filter by type, delete, and summarise income/expense/balance. Every query is scoped to the logged-in user |
-| **AI insights & chat** | Gemini reads the user's transactions and answers questions or gives spending advice, with chat history |
+| **AI insights & chat** | Gemini reads only the logged-in user's transactions and answers questions or gives spending advice, with chat history |
 | **RAG** | Upload a CSV statement → chunked (1000 chars, 200 overlap) → embedded with `gemini-embedding-001` → stored in ChromaDB → ask questions with retrieved context |
 | **Hybrid search** | Combines vector similarity with keyword scoring and re-ranks the merged results |
 | **LangGraph agent** | A state machine: fetch data → analyse spending → score financial health → **branch** to a positive report or an alert report → format output |
@@ -55,12 +55,12 @@ Interactive docs are served at `/docs` once the server is running.
 | GET | `/transactions/{id}` | ✅ | Get one |
 | DELETE | `/transactions/{id}` | ✅ | Delete |
 | GET | `/transactions/summary` | ✅ | Totals and balance |
-| GET | `/ai/insights` | | AI summary of spending |
-| POST | `/ai/chat` | | Chat about your finances |
-| POST | `/ai/advice` | | Targeted spending advice |
-| POST | `/ai/upload` | | Upload a CSV for RAG |
-| POST | `/ai/query-documents` | | Ask questions over uploaded documents |
-| POST | `/ai/hybrid-search` | | Semantic + keyword search |
+| GET | `/ai/insights` | ✅ | AI summary of spending |
+| POST | `/ai/chat` | ✅ | Chat about your finances |
+| POST | `/ai/advice` | ✅ | Targeted spending advice |
+| POST | `/ai/upload` | ✅ | Upload a CSV for RAG |
+| POST | `/ai/query-documents` | ✅ | Ask questions over uploaded documents |
+| POST | `/ai/hybrid-search` | ✅ | Semantic + keyword search |
 | GET | `/ai/deep-analysis` | ✅ | LangGraph agent report |
 | GET | `/ai/crew-analysis` | ✅ | CrewAI multi-agent report |
 | GET | `/health` | – | Health check |
@@ -91,11 +91,10 @@ pip install pytest
 pytest
 ```
 
-The suite runs against a temporary SQLite database with no real LLM calls. It covers signup/login, token validation, transaction CRUD, input validation, summary maths, and **data isolation between users**. CI runs it on every push and pull request.
+The suite runs against a temporary SQLite database with no real LLM calls. It covers signup/login, token validation, transaction CRUD, input validation, summary maths, **data isolation between users**, and auth on every AI endpoint. CI runs it on every push and pull request.
 
 ## Roadmap
 
-- Require auth on every `/ai/*` endpoint and scope AI context to the current user
 - Per-user vector collections, so uploaded documents stay private to their owner
 - Evaluation harness for RAG answers (faithfulness and relevance on a fixed question set)
 - Observability: request latency, token usage and cost per endpoint, exported to Prometheus

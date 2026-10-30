@@ -13,16 +13,19 @@ from passlib.context import CryptContext
 #   Handles bcrypt for us
 
 from dotenv import load_dotenv
-from pygments import token
 
 
 load_dotenv()
 
-SECRET_KEY = os.getenv("SECRET_KEY", "your-super-secret-key-change-this-in-production")
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError(
+        "SECRET_KEY is not set. Add a long random value to your .env "
+        "(python -c \"import secrets; print(secrets.token_urlsafe(48))\")"
+    )
 # ↑ Used to SIGN JWT tokens
 #   Anyone with this key can create valid tokens
 #   MUST be secret! Store in .env only
-#   Default is for development only
 
 ALGORITHM = "HS256"
 # ↑ Hashing algorithm for JWT
