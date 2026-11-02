@@ -15,7 +15,12 @@ Analyst output → Advisor input → Writer input → Final Report
 # IMPORTS
 # ─────────────────────────────────────────────────────
 
+import logging
 import os
+import threading
+
+import config  # noqa: F401  (API key aliases)
+from config import money
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
 
@@ -65,6 +70,10 @@ llm = LLM(
 # Stores user data during crew execution
 # ─────────────────────────────────────────────────────
 
+# The tools below read the current request's data from these module variables.
+# _crew_lock makes sure only one crew runs at a time, so two users' requests can
+# never see each other's data (and the server never runs two heavy crews at once).
+_crew_lock = threading.Lock()
 _current_transactions: List[Dict] = []
 _current_summary: Dict = {}
 # ↑ Global variables to store data during analysis
@@ -122,7 +131,7 @@ def get_all_transactions_tool(query: str = "all") -> str:
             f"{i}. {t.get('date', 'N/A')} | "
             f"{t.get('type', 'N/A').upper()} | "
             f"{t.get('category', 'N/A')} | "
-            f"${float(t.get('amount', 0)):.2f} | "
+            f"{money(float(t.get('amount', 0)))} | "
             f"{t.get('description', 'No description')}"
         )
         lines.append(line)
@@ -163,9 +172,9 @@ def get_financial_summary_tool(query: str = "summary") -> str:
     summary_text = f"""
 FINANCIAL SUMMARY
 {"=" * 40}
-Total Income:      ${total_income:.2f}
-Total Expenses:    ${total_expense:.2f}
-Current Balance:   ${balance:.2f}
+Total Income:      {money(total_income)}
+Total Expenses:    {money(total_expense)}
+Current Balance:   {money(balance)}
 Transactions:      {count}
 {"=" * 40}
 Savings Rate:      {savings_rate:.1f}%
@@ -239,9 +248,9 @@ def calculate_category_totals_tool(query: str = "all categories") -> str:
         #   20% = ████, 40% = ████████
         
         lines.append(
-            f"{rank}. {category:<20} ${amount:>8.2f} ({percentage:.1f}%) {bar}"
+            f"{rank}. {category:<20} {money(amount):>12} ({percentage:.1f}%) {bar}"
             # {category:<20} = left-align, pad to 20 chars
-            # ${amount:>8.2f} = right-align, 2 decimals
+            # money(amount) right-aligned in 12 chars
         )
     
     lines.append("=" * 40)
@@ -275,7 +284,7 @@ def identify_patterns_tool(query: str = "patterns") -> str:
         patterns.append(
             f"💰 LARGEST TRANSACTION: "
             f"{largest.get('category')} - "
-            f"${float(largest.get('amount', 0)):.2f}"
+            f"{money(float(largest.get('amount', 0)))}"
         )
     
     # Pattern 2: Count transactions by type
@@ -320,9 +329,9 @@ def identify_patterns_tool(query: str = "patterns") -> str:
     # Pattern 5: Balance health
     balance = _current_summary.get("balance", 0)
     if balance < 0:
-        patterns.append(f"🚨 NEGATIVE BALANCE: ${balance:.2f} - Overspending!")
+        patterns.append(f"🚨 NEGATIVE BALANCE: {money(balance)} - Overspending!")
     elif balance > 0:
-        patterns.append(f"✅ POSITIVE BALANCE: ${balance:.2f} saved")
+        patterns.append(f"✅ POSITIVE BALANCE: {money(balance)} saved")
     
     result = "SPENDING PATTERNS & ANOMALIES:\n" + "=" * 40 + "\n"
     result += "\n".join(patterns)
@@ -506,7 +515,7 @@ def create_report_writer() -> Agent:
         Your writing principles:
         - Clarity above all else (a confused reader does nothing)
         - Structure matters (good report = good decisions)
-        - Numbers need context (not just $500, but "$500 which is 20% of income")
+        - Numbers need context (not just ₹500, but "₹500 which is 20% of income")
         - End with hope and clear next steps
         - Use formatting to guide the eye (headers, bullets, emphasis)
         
@@ -642,7 +651,7 @@ def create_advice_task(advisor: Agent) -> Task:
         - Which spending categories are highest vs benchmarks
         - Their balance trend (positive/negative)
         
-        Be specific. Say "$50 less on Food" not "reduce food spending."
+        Be specific. Say "₹500 less on Food" not "reduce food spending."
         """,
         
         expected_output="""
@@ -708,7 +717,7 @@ def create_report_task(writer: Agent) -> Task:
         - Encouraging tone that motivates change
         - A clear 30-day action plan at the end
         
-        Make it the kind of report someone would pay $200 for
+        Make it the kind of report someone would pay for
         from a real financial advisor.
         """,
         
@@ -777,7 +786,12 @@ def run_finance_crew(
     6. Return final output
     """
     
-    # Step 1: Set global data for tools to access
+    # One crew at a time: the tools read request data from module globals
+    with _crew_lock:
+        return _run_finance_crew_locked(transactions, summary)
+
+
+def _run_finance_crew_locked(transactions: List[Dict], summary: Dict) -> str:
     global _current_transactions, _current_summary
     _current_transactions = transactions
     _current_summary = summary
@@ -879,11 +893,12 @@ and personalized your analysis will be.
             return str(result)
             # ↑ Fallback: convert to string
     
-    except Exception as e:
+    except Exception:
+        logging.getLogger(__name__).exception("Crew run failed")
         return f"""
 💰 FINANCIAL ANALYSIS REPORT
 ==============================
-❌ Analysis encountered an error: {str(e)}
+❌ The analysis could not be completed right now.
 
 Please try again. If the error persists,
 make sure you have transactions added to your account.

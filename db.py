@@ -17,6 +17,10 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL not set in .env file")
 
+# Some hosts (Heroku, older Render) hand out "postgres://", which SQLAlchemy 2 rejects
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 # Create engine
 engine = create_engine(
     DATABASE_URL,

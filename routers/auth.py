@@ -13,7 +13,10 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from sqlalchemy.orm import Session
 
+import logging
+
 import database
+from services.demo import create_demo_user
 from db import get_db
 from models.user import UserSignup, UserLogin, TokenResponse, UserResponse
 from services.auth_service import (
@@ -23,6 +26,8 @@ from services.auth_service import (
     verify_token
 )
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/auth",
@@ -50,7 +55,7 @@ def get_current_user(
     
     HOW IT'S USED:
     @router.get("/protected-route")
-    async def protected(user = Depends(get_current_user)):
+    def protected(user = Depends(get_current_user)):
         # user = {"id": "abc-123", "email": "..."}
         # If token invalid → automatically returns 401!
     
@@ -80,7 +85,7 @@ def get_current_user(
 # ─────────────────────────────────────
 
 @router.post("/signup", response_model=TokenResponse)
-async def signup(
+def signup(
     user_data: UserSignup,
     db: Session = Depends(get_db)
 ):
@@ -137,10 +142,11 @@ async def signup(
             # "Email already registered"
         )
     
-    except Exception as e:
+    except Exception:
+        logger.exception("Signup failed")
         raise HTTPException(
             status_code=500,
-            detail=f"Signup failed: {str(e)}"
+            detail="Signup failed. Please try again."
         )
 
 # ─────────────────────────────────────
@@ -149,7 +155,7 @@ async def signup(
 # ─
 
 @router.post("/login", response_model=TokenResponse)
-async def login(
+def login(
     user_data: UserLogin,
     db: Session = Depends(get_db)
 ):
@@ -219,7 +225,7 @@ async def login(
 # ─────────────────────────────────────
 
 @router.get("/me", response_model=UserResponse)
-async def get_me(
+def get_me(
     current_user: dict = Depends(get_current_user)
     # ↑ Depends(get_current_user) automatically:
     #   1. Reads token from header
@@ -244,3 +250,23 @@ async def get_me(
         email=current_user["email"],
         created_at=current_user["created_at"]
     )
+
+
+# ─────────────────────────────────────
+# DEMO
+# ─────────────────────────────────────
+
+@router.post("/demo", response_model=TokenResponse)
+def demo_login(db: Session = Depends(get_db)):
+    """
+    One-click demo: creates a private throwaway account with two months
+    of sample transactions and returns a token for it.
+    """
+    try:
+        user = create_demo_user(db)
+    except Exception:
+        logger.exception("Demo account creation failed")
+        raise HTTPException(status_code=500, detail="Could not start the demo. Please try again.")
+
+    token = create_access_token(user_id=user["id"], email=user["email"])
+    return TokenResponse(access_token=token, user_id=user["id"], email=user["email"])

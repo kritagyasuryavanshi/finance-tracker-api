@@ -12,6 +12,7 @@ os.environ.setdefault("DATABASE_URL", f"sqlite:///{_db_dir}/test.db")
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
 os.environ.setdefault("GEMINI_API_KEY", "test-key")
 os.environ.setdefault("GOOGLE_API_KEY", "test-key")
+os.environ.setdefault("DATA_DIR", f"{_db_dir}/vectors")
 
 import uuid  # noqa: E402
 
