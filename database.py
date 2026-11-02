@@ -6,10 +6,20 @@ Database operations using SQLAlchemy + PostgreSQL
 import uuid
 from datetime import datetime
 from typing import List, Optional, Dict
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from models.database_models import TransactionModel
 from models.user import UserModel
 from db import SessionLocal
+
+
+def iso(dt: datetime) -> str:
+    """UTC timestamp in ISO 8601 (parses the same in every browser, Safari included)"""
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
 
 
 def get_db() -> Session:
@@ -35,12 +45,12 @@ def get_all_transactions(
     if transaction_type:
         query = query.filter(TransactionModel.type == transaction_type)
     
-    transactions = query.all()
+    transactions = query.order_by(TransactionModel.date.desc()).all()
     
     return [
         {
             "id": t.id,
-            "date": t.date.strftime("%Y-%m-%d %H:%M:%S"),
+            "date": iso(t.date),
             "type": t.type,
             "category": t.category,
             "amount": t.amount,
@@ -70,7 +80,7 @@ def get_transaction_by_id(
     
     return {
         "id": transaction.id,
-        "date": transaction.date.strftime("%Y-%m-%d %H:%M:%S"),
+        "date": iso(transaction.date),
         "type": transaction.type,
         "category": transaction.category,
         "amount": transaction.amount,
@@ -96,7 +106,7 @@ def create_transaction(db: Session, data: dict) -> dict:
     
     return {
         "id": transaction.id,
-        "date": transaction.date.strftime("%Y-%m-%d %H:%M:%S"),
+        "date": iso(transaction.date),
         "type": transaction.type,
         "category": transaction.category,
         "amount": transaction.amount,
@@ -157,8 +167,9 @@ def get_summary(
 
 def get_user_by_email(db: Session, email: str) -> Optional[Dict]:
     """Find user by email"""
+    # Case-insensitive, so "Me@x.com" at signup and "me@x.com" at login match
     user = db.query(UserModel).filter(
-        UserModel.email == email
+        func.lower(UserModel.email) == normalize_email(email)
     ).first()
     
     if not user:
@@ -197,7 +208,7 @@ def create_user(db: Session, email: str, password_hash: str) -> Dict:
     
     user = UserModel(
         id=str(uuid.uuid4()),
-        email=email,
+        email=normalize_email(email),
         password_hash=password_hash
     )
     

@@ -26,7 +26,11 @@ check_health (is user's finance healthy?)
 # IMPORTS
 # ─────────────────────────────────────────────────────
 
+import logging
 import os
+
+import config  # noqa: F401  (API key aliases)
+from config import money
 from typing import TypedDict, List, Dict, Optional, Annotated
 # TypedDict = define dictionary structure with types
 #             Like TypeScript interfaces but for Python!
@@ -132,6 +136,7 @@ class FinanceState(TypedDict):
     #   Set by: format_output node
     #   This is what we return to the API endpoint!
     
+    health_reason: str
     error: Optional[str]
     # ↑ Error message if something goes wrong
     #   None = no error
@@ -157,8 +162,8 @@ def format_transactions(transactions: List[Dict]) -> str:
     ]
     
     OUTPUT:
-    "- EXPENSE: Food - $500.00
-     - INCOME: Salary - $5000.00"
+    "- EXPENSE: Food - ₹500.00
+     - INCOME: Salary - ₹5000.00"
     """
     if not transactions:
         return "No transactions found"
@@ -168,7 +173,7 @@ def format_transactions(transactions: List[Dict]) -> str:
         line = (
             f"- {t.get('type', 'unknown').upper()}: "
             f"{t.get('category', 'Unknown')} "
-            f"- ${float(t.get('amount', 0)):.2f}"
+            f"- {money(float(t.get('amount', 0)))}"
         )
         # .get('type', 'unknown') = get 'type' or 'unknown' if missing
         # .upper() = EXPENSE not expense
@@ -205,69 +210,23 @@ def fetch_data(state: FinanceState) -> FinanceState:
     Easy to replace with different data source
     """
     
+    # Imported here to avoid circular imports; a node creates its own session
+    # because FastAPI's Depends() is not available inside the graph
+    import database
+    from db import SessionLocal
+
+    db = SessionLocal()
     try:
-        # Import here to avoid circular imports
-        import database
-        from db import SessionLocal
-        # ↑ We create our own DB session here
-        #   Can't use Depends() outside FastAPI
-        #   So we create session manually
-        
-        db = SessionLocal()
-        # ↑ Create database connection
-        
         user_id = state["user_id"]
-        # ↑ Read user_id from state
-        #   This was set when graph was invoked
-        
-        # Get transactions for this user
-        transactions = database.get_all_transactions(
-            db,
-            user_id=user_id
-        )
-        # ↑ Same function we use in our API!
-        #   Returns list of transaction dicts
-        #   Filtered by user_id (only their data)
-        
-        # Get financial summary
-        summary = database.get_summary(
-            db,
-            user_id=user_id
-        )
-        # ↑ Returns {total_income, total_expense, balance, count}
-        
-        db.close()
-        # ↑ ALWAYS close database connection!
-        #   Otherwise connection leak!
-        
-        # Return updated state
-        return {
-            **state,
-            # ↑ Spread operator = copy ALL existing state
-            #   Same as {...state} in JavaScript
-            #   Keeps user_id and everything else
-            
-            "transactions": transactions,
-            # ↑ Add transactions to state
-            
-            "summary": summary,
-            # ↑ Add summary to state
-            
-            "error": None
-            # ↑ No error = success
-        }
-    
-    except Exception as e:
-        # If database fails, record error in state
-        return {
-            **state,
-            "transactions": [],
-            "summary": {},
-            "error": f"Failed to fetch data: {str(e)}"
-        }
-        # ↑ Don't crash the whole graph!
-        #   Set error in state
-        #   Other nodes can check for errors
+        transactions = database.get_all_transactions(db, user_id=user_id)
+        summary = database.get_summary(db, user_id=user_id)
+        return {**state, "transactions": transactions, "summary": summary, "error": None}
+    except Exception:
+        logging.getLogger(__name__).exception("fetch_data failed")
+        # Don't crash the graph: record the error so later nodes skip their work
+        return {**state, "transactions": [], "summary": {}, "error": "Could not load your transactions."}
+    finally:
+        db.close()  # always release the connection
 
 
 # ─────────────────────────────────────────────────────
@@ -311,9 +270,9 @@ def analyze_spending(state: FinanceState) -> FinanceState:
     prompt = f"""You are a personal finance expert analyzing a user's spending data.
 
 FINANCIAL SUMMARY:
-- Total Income: ${summary.get('total_income', 0):.2f}
-- Total Expenses: ${summary.get('total_expense', 0):.2f}
-- Current Balance: ${summary.get('balance', 0):.2f}
+- Total Income: {money(summary.get('total_income', 0))}
+- Total Expenses: {money(summary.get('total_expense', 0))}
+- Current Balance: {money(summary.get('balance', 0))}
 - Number of Transactions: {summary.get('transaction_count', 0)}
 
 ALL TRANSACTIONS:
@@ -397,20 +356,24 @@ def check_health(state: FinanceState) -> FinanceState:
     if total_income == 0:
         # No income recorded
         health = "needs_attention"
+        reason = "no income has been recorded"
     
     elif total_expense > total_income:
         # Spending more than earning!
         health = "needs_attention"
+        reason = "expenses are higher than income"
     
     elif total_expense > (total_income * 0.9):
         # Spending more than 90% of income
         # Less than 10% savings rate
         health = "needs_attention"
+        reason = "more than 90% of income is being spent, leaving almost no savings"
     
     else:
         # Spending less than 90% of income
         # Savings rate > 10% = healthy!
         health = "healthy"
+        reason = "spending is comfortably below income"
     
     # Also ask AI to confirm health assessment
     if total_income > 0:
@@ -424,6 +387,7 @@ def check_health(state: FinanceState) -> FinanceState:
     return {
         **state,
         "financial_health": health,
+        "health_reason": reason,
         # ↑ "healthy" or "needs_attention"
         #   This is READ by the conditional edge!
         
@@ -465,9 +429,9 @@ ANALYSIS:
 {analysis}
 
 SUMMARY:
-- Income: ${summary.get('total_income', 0):.2f}
-- Expenses: ${summary.get('total_expense', 0):.2f}
-- Balance: ${summary.get('balance', 0):.2f}
+- Income: {money(summary.get('total_income', 0))}
+- Expenses: {money(summary.get('total_expense', 0))}
+- Balance: {money(summary.get('balance', 0))}
 
 Write a report that:
 1. ✅ Celebrates what they're doing well
@@ -516,12 +480,12 @@ ANALYSIS:
 {analysis}
 
 SUMMARY:
-- Income: ${summary.get('total_income', 0):.2f}
-- Expenses: ${summary.get('total_expense', 0):.2f}
-- Balance: ${summary.get('balance', 0):.2f}
+- Income: {money(summary.get('total_income', 0))}
+- Expenses: {money(summary.get('total_expense', 0))}
+- Balance: {money(summary.get('balance', 0))}
 
 Write a report that:
-1. ⚠️ Clearly identifies the main problem
+1. ⚠️ Clearly identifies the main problem: {state.get('health_reason', 'spending is high')}
 2. 🔴 Shows exactly where they're overspending
 3. 💡 Gives 3 IMMEDIATE actions they can take
 4. 📉 Shows how much they need to cut to be healthy
@@ -534,8 +498,8 @@ Keep under 300 words."""
     
     # Generate a short alert message
     alert_prompt = f"""In ONE sentence, write an urgent but caring alert 
-for someone spending more than they earn.
-Their balance is ${summary.get('balance', 0):.2f}.
+for someone whose finances need attention because {state.get('health_reason', 'their spending is high')}.
+Their balance is {money(summary.get('balance', 0))}.
 Start with an emoji."""
     
     alert_response = llm.invoke(alert_prompt)
@@ -590,9 +554,9 @@ def format_output(state: FinanceState) -> FinanceState:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 💰 QUICK SUMMARY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Income:   ${summary.get('total_income', 0):.2f}
-Expenses: ${summary.get('total_expense', 0):.2f}
-Balance:  ${summary.get('balance', 0):.2f}
+Income:   {money(summary.get('total_income', 0))}
+Expenses: {money(summary.get('total_expense', 0))}
+Balance:  {money(summary.get('balance', 0))}
 Transactions: {summary.get('transaction_count', 0)}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -792,6 +756,7 @@ def run_finance_analysis(user_id: str) -> dict:
         "report": "",
         "alert_message": "",
         "final_output": "",
+        "health_reason": "",
         "error": None
         # ↑ Everything else starts empty
         #   Nodes will fill these in as graph runs

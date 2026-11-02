@@ -1,7 +1,7 @@
 # models/user.py
 from sqlalchemy import Column, String, DateTime
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 from models.database_models import Base
 
@@ -24,7 +24,7 @@ class UserModel(Base):
 # ─────────────────────────────────────
 
 class UserSignup(BaseModel):
-    email: str = Field(..., min_length=3)
+    email: EmailStr
     password: str = Field(..., min_length=6)
 
 

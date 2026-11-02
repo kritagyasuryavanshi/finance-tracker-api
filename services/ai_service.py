@@ -5,6 +5,9 @@ Uses google.genai (new package, replaces google.generativeai)
 """
 
 import os
+
+import config  # noqa: F401  (API key aliases)
+from config import money
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
@@ -57,7 +60,7 @@ def format_transactions_for_ai(transactions: List[Dict]) -> str:
         line = (
             f"- {transaction['type'].upper()}: "
             f"{transaction['category']} "
-            f"- ${float(transaction['amount']):.2f} "
+            f"- {money(float(transaction['amount']))} "
             f"({transaction.get('description', 'no description')})"
         )
         formatted_lines.append(line)
@@ -81,9 +84,9 @@ def get_financial_insights(
 Please analyze my financial data below:
 
 ═══ FINANCIAL SUMMARY ═══
-- Total Income:       ${summary['total_income']:.2f}
-- Total Expenses:     ${summary['total_expense']:.2f}
-- Current Balance:    ${summary['balance']:.2f}
+- Total Income:       {money(summary['total_income'])}
+- Total Expenses:     {money(summary['total_expense'])}
+- Current Balance:    {money(summary['balance'])}
 - Total Transactions: {summary['transaction_count']}
 
 ═══ ALL TRANSACTIONS ═══
@@ -135,9 +138,9 @@ def chat_with_ai(
 The user's current financial data:
 
 SUMMARY:
-- Income:   ${summary['total_income']:.2f}
-- Expenses: ${summary['total_expense']:.2f}
-- Balance:  ${summary['balance']:.2f}
+- Income:   {money(summary['total_income'])}
+- Expenses: {money(summary['total_expense'])}
+- Balance:  {money(summary['balance'])}
 
 TRANSACTIONS:
 {transactions_text}
@@ -205,12 +208,12 @@ def get_spending_advice(
 
     prompt = f"""
 My spending on {category}:
-- Amount spent:  ${amount:.2f}
-- Total income:  ${total_income:.2f}
+- Amount spent:  {money(amount)}
+- Total income:  {money(total_income)}
 - Percentage:    {percentage:.1f}% of income
 
 Please tell me:
-1. Is ${amount:.2f} on {category} healthy?
+1. Is {money(amount)} on {category} healthy?
 2. What % of income should {category} be?
 3. Give me 3 specific tips to optimize {category} spending
 

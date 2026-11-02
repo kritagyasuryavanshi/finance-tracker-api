@@ -1,349 +1,227 @@
-# services/langchain_service.py
 """
-LangChain RAG System
+RAG over a user's uploaded CSV statement.
 
-Handles:
-- Document loading
-- Vector embeddings
-- Retrieval
-- AI chains
-- Multi-agent systems
+- Each user gets a private Chroma collection (user_<id>), persisted on disk, so
+  users never see each other's documents and data survives a restart.
+- A new upload replaces that user's previous document.
+- Totals are computed deterministically from the CSV at upload time (when the
+  columns can be recognised); the LLM explains numbers, it does not add them up.
+- query_with_agent runs a ReAct agent whose tools are bound to one user's store.
 """
 
+import csv
+import json
+import logging
 import os
-from typing import List, Optional
-import tempfile
 from pathlib import Path
+from typing import Dict, List, Optional
 
-# LangChain imports
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain_community.document_loaders import CSVLoader, PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+import config  # noqa: F401  (API key aliases)
+from config import DATA_DIR, money
 from langchain_chroma import Chroma
+from langchain_classic.agents import AgentExecutor, create_react_agent
 from langchain_classic.chains import RetrievalQA
-from langchain_classic.agents import create_react_agent, AgentExecutor
-from langchain_classic import hub
-from langchain_core.tools import Tool, tool
-from dotenv import load_dotenv
+from langchain_community.document_loaders import CSVLoader
+from langchain_core.prompts import PromptTemplate
+from langchain_core.tools import tool
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-load_dotenv()
+logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────
-# SETUP
-# ─────────────────────────────────────────────────────
-
-# Initialize Gemini
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    # ↑ Fast and cost-effective
-    
-    temperature=0.7,
-    # ↑ Balance between consistency (0) and creativity (1)
-)
-
-# Initialize embeddings (for vector DB)
-embeddings = GoogleGenerativeAIEmbeddings(
-    model="gemini-embedding-001"
-    # ↑ Converts text to vectors
-)
-
-# Text splitter (chunks large documents)
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1000,
-    # ↑ Each chunk ~1000 characters
-    #   Not too small (loses context)
-    #   Not too big (loses specificity)
-    
-    chunk_overlap=200,
-    # ↑ Overlap between chunks
-    #   Prevents losing info at boundaries
-)
-
-# Global vector store
-vectorstore = None
-# ↑ Loaded after user uploads file
+llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.3)
+embeddings = GoogleGenerativeAIEmbeddings(model="gemini-embedding-001")
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
 
 
-# ─────────────────────────────────────────────────────
-# PART 1: DOCUMENT LOADING & PROCESSING
-# ─────────────────────────────────────────────────────
+# ─────────────────────────────────────
+# PER-USER STORAGE
+# ─────────────────────────────────────
 
-def load_and_process_csv(file_path: str) -> List:
-    """
-    Load CSV file and process into documents
-    
-    Args:
-        file_path: Path to CSV file
-        
-    Returns:
-        List of processed documents
-    """
-    
-    # Step 1: Load CSV
-    loader = CSVLoader(
-        file_path=file_path,
-        source_column="Date"
-        # ↑ Use Date column as source identifier
+def _collection_name(user_id: str) -> str:
+    return f"user_{user_id.replace('-', '')}"[:63]
+
+
+def _stats_path(user_id: str) -> Path:
+    return Path(DATA_DIR) / f"stats_{_collection_name(user_id)}.json"
+
+
+def _open_store(user_id: str) -> Chroma:
+    os.makedirs(DATA_DIR, exist_ok=True)
+    return Chroma(
+        collection_name=_collection_name(user_id),
+        embedding_function=embeddings,
+        persist_directory=DATA_DIR,
     )
-    
-    documents = loader.load()
-    # ↑ Each row becomes a document
-    
-    # Step 2: Split into chunks
-    # (for very large CSVs)
-    chunks = text_splitter.split_documents(documents)
-    
-    return chunks
 
 
-def create_vector_store(documents: List):
-    """
-    Create vector database from documents
-    
-    Args:
-        documents: List of documents to embed
-    """
-    
-    global vectorstore
-    
-    # Create Chroma vector store
-    vectorstore = Chroma.from_documents(
-        documents=documents,
-        embedding=embeddings,
-        persist_directory="./chroma_db"
-        # ↑ Save locally so we don't re-embed
-    )
-    # ↑ Each document is converted to embedding
-    #   Stored in Chroma DB
-    #   Ready for searches
+def get_user_store(user_id: str) -> Optional[Chroma]:
+    """The user's vector store, or None if they have not uploaded anything."""
+    store = _open_store(user_id)
+    return store if store._collection.count() > 0 else None
 
 
-# ─────────────────────────────────────────────────────
-# PART 2: SIMPLE RAG CHAINS
-# ─────────────────────────────────────────────────────
+# ─────────────────────────────────────
+# UPLOAD
+# ─────────────────────────────────────
 
-def create_qa_chain():
-    """
-    Create RetrievalQA chain
-    
-    This is the simplest RAG approach
-    User asks question → Retrieve docs → Answer
-    """
-    
-    if vectorstore is None:
+def _to_number(value: str) -> Optional[float]:
+    cleaned = (value or "").replace(",", "").replace("₹", "").replace("$", "").replace("Rs", "").strip()
+    if cleaned.startswith("(") and cleaned.endswith(")"):
+        cleaned = "-" + cleaned[1:-1]
+    try:
+        return float(cleaned)
+    except ValueError:
         return None
-    
-    # Create retriever from vectorstore
-    retriever = vectorstore.as_retriever(
-        search_type="similarity",
-        # ↑ Find docs similar to question
-        
-        search_kwargs={"k": 3}
-        # ↑ Return top 3 most similar docs
+
+
+def compute_csv_stats(file_path: str) -> Optional[Dict]:
+    """
+    Work out income / expense totals from common statement layouts:
+    - separate Debit / Credit (or Withdrawal / Deposit) columns
+    - an Amount column plus a Type column (income / expense, credit / debit)
+    - a signed Amount column (negative = expense)
+    Returns None when the layout is not recognised.
+    """
+    with open(file_path, newline="", encoding="utf-8-sig") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return None
+
+    cols = {c.lower().strip(): c for c in rows[0].keys() if c}
+
+    def find(*names):
+        for key, original in cols.items():
+            if any(n in key for n in names):
+                return original
+        return None
+
+    debit, credit = find("debit", "withdrawal"), find("credit", "deposit")
+    amount, kind = find("amount", "value"), find("type")
+    income = expense = 0.0
+
+    if debit and credit:
+        for r in rows:
+            expense += abs(_to_number(r.get(debit)) or 0)
+            income += abs(_to_number(r.get(credit)) or 0)
+    elif amount and kind:
+        for r in rows:
+            value = abs(_to_number(r.get(amount)) or 0)
+            label = (r.get(kind) or "").lower()
+            if any(w in label for w in ("income", "credit", "deposit", "salary")):
+                income += value
+            else:
+                expense += value
+    elif amount:
+        for r in rows:
+            value = _to_number(r.get(amount)) or 0
+            if value >= 0:
+                income += value
+            else:
+                expense += -value
+    else:
+        return None
+
+    return {
+        "rows": len(rows),
+        "total_income": round(income, 2),
+        "total_expense": round(expense, 2),
+        "balance": round(income - expense, 2),
+    }
+
+
+def index_user_csv(user_id: str, file_path: str, filename: str) -> int:
+    """Embed a CSV into the user's store (replacing any earlier upload). Returns row count."""
+    documents = CSVLoader(file_path=file_path, encoding="utf-8-sig").load()
+    if not documents:
+        return 0
+    for doc in documents:
+        doc.metadata["source"] = f"{filename}, row {doc.metadata.get('row', 0) + 1}"
+
+    chunks = text_splitter.split_documents(documents)
+
+    store = _open_store(user_id)
+    store.delete_collection()
+    Chroma.from_documents(
+        documents=chunks,
+        embedding=embeddings,
+        collection_name=_collection_name(user_id),
+        persist_directory=DATA_DIR,
     )
-    
-    # Create QA chain
+
+    try:
+        stats = compute_csv_stats(file_path)
+    except Exception:
+        logger.exception("Could not compute CSV stats")
+        stats = None
+    path = _stats_path(user_id)
+    if stats:
+        path.write_text(json.dumps(stats))
+    else:
+        path.unlink(missing_ok=True)
+
+    return len(documents)
+
+
+# ─────────────────────────────────────
+# QUESTION ANSWERING
+# ─────────────────────────────────────
+
+NO_DOCS = "No document uploaded yet. Upload a CSV statement first."
+
+
+def query_documents(user_id: str, question: str) -> dict:
+    """Retrieval-augmented answer with the rows it was based on."""
+    store = get_user_store(user_id)
+    if store is None:
+        return {"answer": NO_DOCS, "sources": []}
+
     qa_chain = RetrievalQA.from_chain_type(
         llm=llm,
         chain_type="stuff",
-        # ↑ "stuff" = stuff all docs into prompt
-        #   (vs. map_reduce for very large docs)
-        
-        retriever=retriever,
-        return_source_documents=True
-        # ↑ Return which docs were used
+        retriever=store.as_retriever(search_type="similarity", search_kwargs={"k": 4}),
+        return_source_documents=True,
     )
-    
-    return qa_chain
+    result = qa_chain.invoke({"query": question})
+    sources = list(dict.fromkeys(d.metadata.get("source", "Unknown") for d in result.get("source_documents", [])))
+    return {"answer": result["result"], "sources": sources}
 
 
-def query_documents(question: str) -> dict:
-    """
-    Ask a question about uploaded documents
-    
-    Args:
-        question: User's question
-        
-    Returns:
-        {"answer": "...", "sources": [...]}
-    """
-    
-    qa_chain = create_qa_chain()
-    
-    if qa_chain is None:
-        return {
-            "answer": "No documents loaded. Upload a CSV first!",
-            "sources": []
-        }
-    
-    try:
-        result = qa_chain.invoke({"query": question})
-        
-        return {
-            "answer": result["result"],
-            "sources": [
-                doc.metadata.get("source", "Unknown")
-                for doc in result.get("source_documents", [])
-            ]
-        }
-    
-    except Exception as e:
-        return {
-            "answer": f"Error: {str(e)}",
-            "sources": []
-        }
+def hybrid_search(user_id: str, query: str, k: int = 3) -> List[str]:
+    """Merge semantic matches with keyword matches, semantic first."""
+    store = get_user_store(user_id)
+    if store is None:
+        return []
+
+    combined: List[str] = []
+    for doc in store.similarity_search(query, k=k * 2):
+        if doc.page_content not in combined:
+            combined.append(doc.page_content)
+
+    keywords = query.lower().split()
+    scored = []
+    for content in store._collection.get()["documents"]:
+        score = sum(1 for kw in keywords if kw in content.lower())
+        if score:
+            scored.append((score, content))
+    for _, content in sorted(scored, key=lambda x: x[0], reverse=True)[:k]:
+        if content not in combined:
+            combined.append(content)
+
+    return combined[:k]
 
 
-# ─────────────────────────────────────────────────────
-# PART 3: MULTI-AGENT SYSTEM
-# ─────────────────────────────────────────────────────
+# ─────────────────────────────────────
+# REACT AGENT (tools bound to one user's store)
+# ─────────────────────────────────────
 
-@tool
-def answer_general_question(question: str) -> str:
-    """
-    Answer any general question NOT related to the user's
-    financial transactions or data — general knowledge,
-    explanations, casual conversation, anything else.
-    
-    Use this when the question is NOT about searching
-    transactions, analyzing spending, or financial summaries.
-    """
-    
-    response = llm.invoke(question)
-    # ↑ Direct call to Gemini, no tool/retrieval needed
-    #   Just answer like a normal chatbot would
-    
-    return response.content
+REACT_TEMPLATE = """You are a helpful AI assistant for a personal finance app.
 
-@tool
-def search_transactions(query: str) -> str:
-    """
-    Search transactions by description
-    
-    Use when user asks about specific transactions
-    """
-    
-    if vectorstore is None:
-        return "No data loaded"
-    
-    results = vectorstore.similarity_search(query, k=5)
-    
-    # Format results
-    formatted = "\n".join([doc.page_content for doc in results])
-    return formatted
+The user may have uploaded a CSV of their transactions. It is searchable through
+your tools. If they ask about "the document", "my data" or "my file", use the tools.
+Never invent numbers: totals come from the summary tool.
 
-
-@tool
-def analyze_spending_patterns(category: str) -> str:
-    """
-    Analyze spending in a specific category
-    
-    Use when user asks about category trends
-    """
-    
-    if vectorstore is None:
-        return "No data loaded"
-    
-    query = f"spending in {category}"
-    results = vectorstore.similarity_search(query, k=15)
-    
-    if not results:
-        return f"No transactions found related to {category}"
-    
-    # Let the AI read the raw documents and calculate
-    # instead of brittle string-splitting on exact column names
-    raw_data = "\n".join([doc.page_content for doc in results])
-    
-    prompt = f"""Below are financial transaction records in raw text form.
-The column names and format may vary (e.g. "Amount" or "amount" or "value",
-"Category" or "type" or "tag", etc). Read them carefully regardless of
-exact column naming.
-
-RECORDS:
-{raw_data}
-
-Calculate the total amount spent specifically related to "{category}"
-(include similar/related terms, e.g. "food" should include "groceries",
-"restaurant", "dining" etc if present).
-
-Respond in this exact format:
-Found [count] transactions related to {category} totaling $[total]
-
-If you cannot determine amounts from the data, say so clearly instead of guessing.
-"""
-    
-    response = llm.invoke(prompt)
-    return response.content
-
-@tool
-def get_summary_stats() -> str:
-    """
-    Get overall financial summary
-    
-    Use when user asks about total spending, balance, etc.
-    """
-    
-    if vectorstore is None:
-        return "No data loaded"
-    
-    results = vectorstore.similarity_search("transactions", k=100)
-    
-    if not results:
-        return "No transaction data found"
-    
-    raw_data = "\n".join([doc.page_content for doc in results])
-    
-    prompt = f"""Below are financial transaction records in raw text form.
-The column names and format may vary across rows or files. Read them
-carefully regardless of exact column naming (e.g. "Amount" vs "amount"
-vs "value", "Type" vs "category" indicating income/expense, etc).
-
-RECORDS:
-{raw_data}
-
-Calculate and respond in this exact format:
-Total Income: $[amount]
-Total Expenses: $[amount]
-Balance: $[amount]
-
-If the data doesn't clearly indicate income vs expense, make a reasonable
-judgment (e.g. salary/refund/deposit = income, purchases/bills = expense)
-and note your assumption briefly.
-"""
-    
-    response = llm.invoke(prompt)
-    return response.content
-
-def create_agent():
-    """
-    Create multi-agent system
-    
-    Agent can use multiple tools to solve complex questions
-    """
-    
-    # Define tools
-    tools = [
-        search_transactions,
-        analyze_spending_patterns,
-        get_summary_stats,
-        answer_general_question
-    ]
-    
-    # Write our own ReAct prompt (no external download needed)
-    # ReAct = the agent THINKS, then ACTS, then OBSERVES, repeat
-    from langchain_core.prompts import PromptTemplate
-    
-    react_template = """You are a helpful AI assistant for a personal finance app.
-
-IMPORTANT CONTEXT: The user may have already uploaded a CSV document
-containing their financial transactions. This data is NOT a separate
-"document" you read directly — instead, it has been processed and is
-searchable through your tools (search_transactions, analyze_spending_patterns,
-get_summary_stats). If the user asks about "the document", "my data",
-"my file", or "what I uploaded", treat this as a request to search or
-summarize their transaction data using your tools.
-
-Answer the following question as best you can. You have access to the following tools:
+You have access to the following tools:
 
 {tools}
 
@@ -363,92 +241,55 @@ Begin!
 Question: {input}
 Thought:{agent_scratchpad}"""
 
-    prompt = PromptTemplate.from_template(react_template)
-    
-    # Create agent
-    agent = create_react_agent(llm, tools, prompt)
-    # Create executor
-    executor = AgentExecutor(
-        agent=agent,
-        tools=tools,
-        verbose=True,
-        handle_parsing_errors=True,
-        # ↑ Show agent's thinking process
-    )
-    
-    return executor
+
+def create_agent(user_id: str) -> AgentExecutor:
+    store = get_user_store(user_id)
+
+    @tool
+    def search_transactions(query: str) -> str:
+        """Search the user's uploaded transactions for rows matching a query."""
+        if store is None:
+            return NO_DOCS
+        return "\n".join(d.page_content for d in store.similarity_search(query, k=5))
+
+    @tool
+    def analyze_spending_patterns(category: str) -> str:
+        """Find and total the user's spending related to one category, e.g. food or travel."""
+        if store is None:
+            return NO_DOCS
+        rows = "\n".join(d.page_content for d in store.similarity_search(f"spending in {category}", k=15))
+        prompt = (
+            f"Records:\n{rows}\n\nTotal the amounts spent on '{category}' (include close synonyms). "
+            f"Reply exactly: Found [count] transactions related to {category} totaling [amount]. "
+            "If amounts cannot be determined, say so instead of guessing."
+        )
+        return llm.invoke(prompt).content
+
+    @tool
+    def get_summary_stats(query: str = "") -> str:
+        """Get total income, total expenses and balance for the uploaded document."""
+        path = _stats_path(user_id)
+        if path.exists():
+            s = json.loads(path.read_text())
+            return (
+                f"Rows: {s['rows']}\nTotal Income: {money(s['total_income'])}\n"
+                f"Total Expenses: {money(s['total_expense'])}\nBalance: {money(s['balance'])}"
+            )
+        if store is None:
+            return NO_DOCS
+        return "Totals could not be calculated: the CSV's amount columns were not recognised."
+
+    @tool
+    def answer_general_question(question: str) -> str:
+        """Answer a general personal-finance question that does not need the user's data."""
+        return llm.invoke(question).content
+
+    tools = [search_transactions, analyze_spending_patterns, get_summary_stats, answer_general_question]
+    agent = create_react_agent(llm, tools, PromptTemplate.from_template(REACT_TEMPLATE))
+    return AgentExecutor(agent=agent, tools=tools, handle_parsing_errors=True, max_iterations=6)
 
 
-def query_with_agent(question: str) -> str:
-    """
-    Ask complex questions using multi-agent system
-    
-    Agent can:
-    - Search transactions
-    - Analyze patterns
-    - Get summaries
-    - Combine information
-    
-    Args:
-        question: User's question
-        
-    Returns:
-        Comprehensive answer
-    """
-    
-    try:
-        executor = create_agent()
-        result = executor.invoke({"input": question})
-        return result["output"]
-    
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-
-# ─────────────────────────────────────────────────────
-# PART 4: ADVANCED RAG - HYBRID SEARCH
-# ─────────────────────────────────────────────────────
-
-def hybrid_search(query: str, k: int = 3) -> List:
-    """
-    Hybrid search combining multiple strategies
-    
-    1. Semantic search (similar meaning)
-    2. Keyword search (exact matches)
-    3. Re-ranking (best results first)
-    """
-    
-    if vectorstore is None:
-        return []
-    
-    # Semantic search
-    semantic_results = vectorstore.similarity_search(query, k=k*2)
-    
-    # Keyword search (simple implementation)
-    keywords = query.lower().split()
-    keyword_results = []
-    
-    all_docs = vectorstore._collection.get()
-    for doc_id, doc_content in zip(all_docs["ids"], all_docs["documents"]):
-        score = sum(1 for kw in keywords if kw in doc_content.lower())
-        if score > 0:
-            keyword_results.append((doc_content, score))
-    
-    # Sort by keyword score
-    keyword_results.sort(key=lambda x: x[1], reverse=True)
-    
-    # Combine and deduplicate
-    combined = []
-    seen = set()
-    
-    for doc in semantic_results:
-        if doc.page_content not in seen:
-            combined.append(doc)
-            seen.add(doc.page_content)
-    
-    for content, score in keyword_results[:k]:
-        if content not in seen:
-            combined.append(content)
-            seen.add(content)
-    
-    return combined[:k]
+def query_with_agent(user_id: str, question: str) -> str:
+    if get_user_store(user_id) is None:
+        return NO_DOCS
+    return create_agent(user_id).invoke({"input": question})["output"]

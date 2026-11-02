@@ -32,6 +32,13 @@ flowchart LR
 | **LangGraph agent** | A state machine: fetch data → analyse spending → score financial health → **branch** to a positive report or an alert report → format output |
 | **CrewAI crew** | Three role-based agents (data analyst, financial advisor, report writer) with custom tools for category totals and pattern detection, run as a sequential crew |
 
+## Engineering notes
+
+- **Private by design:** every query is scoped to the logged-in user; each user's uploaded documents live in their own vector collection.
+- **Non-blocking:** slow LLM calls run in worker threads, so a 60-second CrewAI analysis never blocks logins.
+- **Fast cold start:** heavy AI libraries load on first use, cutting startup memory from about 350 MB to 70 MB, so it fits a free hosting tier.
+- **Numbers are computed, not generated:** totals come from SQL or from parsing the CSV; the LLM explains them.
+
 ## Tech stack
 
 - **API:** Python 3.13, FastAPI, Pydantic v2, Uvicorn
@@ -50,6 +57,7 @@ Interactive docs are served at `/docs` once the server is running.
 | POST | `/auth/signup` | – | Create account, returns JWT |
 | POST | `/auth/login` | – | Log in, returns JWT |
 | GET | `/auth/me` | ✅ | Current user |
+| POST | `/auth/demo` | – | One-click demo: a private throwaway account with sample data |
 | GET | `/transactions/` | ✅ | List (optional `?transaction_type=income\|expense`) |
 | POST | `/transactions/` | ✅ | Create |
 | GET | `/transactions/{id}` | ✅ | Get one |
@@ -95,6 +103,5 @@ The suite runs against a temporary SQLite database with no real LLM calls. It co
 
 ## Roadmap
 
-- Per-user vector collections, so uploaded documents stay private to their owner
 - Evaluation harness for RAG answers (faithfulness and relevance on a fixed question set)
 - Observability: request latency, token usage and cost per endpoint, exported to Prometheus

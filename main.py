@@ -3,13 +3,19 @@
 Finance Tracker API
 """
 
+import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+
+import config  # noqa: F401  (loads env, API key aliases and logging first)
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import OperationalError
 from fastapi.middleware.cors import CORSMiddleware
-from routers import transactions
+
 from db import init_db
-from routers import ai
-from routers import auth    
+from routers import ai, auth, transactions
+
+logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────
@@ -17,65 +23,59 @@ from routers import auth
 # ─────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize database on startup (gracefully handle errors)"""
+    """Create tables on startup; keep serving (health checks) if the DB is down."""
     try:
         init_db()
-        print("✅ Database initialized successfully")
-    except Exception as e:
-        # Don't fail app startup if DB is unavailable
-        print(f"⚠️ Database initialization failed: {str(e)[:100]}")
-        print("⚠️ App will run without database - will reconnect on next request")
-    
+        logger.info("Database initialized")
+    except Exception:
+        logger.exception("Database initialization failed; requests that need the DB will error until it is reachable")
     yield
-    
-    print("👋 Application shutdown")
 
 
-# ─────────────────────────────────────
-# CREATE APP WITH LIFESPAN
-# ─────────────────────────────────────
 app = FastAPI(
-    title="💰 Finance Tracker API",
-    description="Track your personal finances via REST API",
-    version="1.0.0",
-    lifespan=lifespan
+    title="Finance Tracker API",
+    description="AI-powered personal finance API: transactions, RAG, LangGraph and CrewAI analyses",
+    version="1.1.0",
+    lifespan=lifespan,
 )
 
 
 # ─────────────────────────────────────
-# CORS MIDDLEWARE
+# CORS
+# Auth uses Bearer tokens (not cookies), so credentials are not needed.
+# Set ALLOWED_ORIGINS to your frontend URL in production.
 # ─────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=config.ALLOWED_ORIGINS,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# ─────────────────────────────────────
-# INCLUDE ROUTERS
-# ─────────────────────────────────────
+@app.exception_handler(OperationalError)
+def database_unavailable(request: Request, exc: OperationalError):
+    """Database down or unreachable (e.g. an expired free database): say so instead of a bare 500."""
+    logger.error("Database unavailable: %s", exc.orig)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "The database is unavailable right now. Please try again in a few minutes."},
+    )
+
+
 app.include_router(transactions.router)
 app.include_router(ai.router)
 app.include_router(auth.router)
 
-# ─────────────────────────────────────
-# HEALTH CHECK ENDPOINTS
-# ─────────────────────────────────────
+
 @app.get("/", tags=["Health"])
-async def root():
-    """API info and health check"""
-    return {
-        "name": "Finance Tracker API",
-        "version": "1.0.0",
-        "status": "✅ running",
-        "docs": "http://localhost:8000/docs",
-    }
+def root():
+    """API info"""
+    return {"name": "Finance Tracker API", "version": "1.1.0", "status": "running", "docs": "/docs"}
 
 
 @app.get("/health", tags=["Health"])
-async def health():
-    """Simple health check"""
+def health():
+    """Lightweight health check, also used by the frontend to wake the server"""
     return {"status": "healthy"}

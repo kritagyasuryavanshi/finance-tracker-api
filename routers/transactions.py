@@ -19,7 +19,7 @@ router = APIRouter(
 
 
 @router.get("/", response_model=List[Transaction])
-async def get_all_transactions(
+def get_all_transactions(
     transaction_type: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
      current_user: dict = Depends(get_current_user)
@@ -36,13 +36,13 @@ async def get_all_transactions(
 
 
 @router.get("/summary", response_model=TransactionSummary)
-async def get_summary(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+def get_summary(db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """Get financial summary"""
     return database.get_summary(db,user_id=current_user["id"])
 
 
 @router.get("/{transaction_id}", response_model=Transaction)
-async def get_transaction(transaction_id: str, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
+def get_transaction(transaction_id: str, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     """Get single transaction"""
     transaction = database.get_transaction_by_id(db, transaction_id,user_id=current_user["id"])
     
@@ -53,7 +53,7 @@ async def get_transaction(transaction_id: str, db: Session = Depends(get_db), cu
 
 
 @router.post("/", response_model=Transaction, status_code=201)
-async def create_transaction(
+def create_transaction(
     transaction: TransactionCreate,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user)
@@ -71,7 +71,7 @@ async def create_transaction(
 
 
 @router.delete("/{transaction_id}", response_model=DeleteResponse)
-async def delete_transaction(
+def delete_transaction(
     transaction_id: str,
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user)
