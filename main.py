@@ -7,7 +7,9 @@ import logging
 from contextlib import asynccontextmanager
 
 import config  # noqa: F401  (loads env, API key aliases and logging first)
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import OperationalError
 from fastapi.middleware.cors import CORSMiddleware
 
 from db import init_db
@@ -50,6 +52,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(OperationalError)
+def database_unavailable(request: Request, exc: OperationalError):
+    """Database down or unreachable (e.g. an expired free database): say so instead of a bare 500."""
+    logger.error("Database unavailable: %s", exc.orig)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "The database is unavailable right now. Please try again in a few minutes."},
+    )
 
 
 app.include_router(transactions.router)

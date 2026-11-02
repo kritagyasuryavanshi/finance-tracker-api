@@ -103,3 +103,16 @@ def test_heavy_ai_libraries_are_not_loaded_at_startup():
     out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == ""
+
+
+def test_database_outage_returns_clear_503(client, monkeypatch):
+    import database
+    from sqlalchemy.exc import OperationalError
+
+    def broken(*args, **kwargs):
+        raise OperationalError("SELECT 1", {}, Exception("could not connect to server"))
+
+    monkeypatch.setattr(database, "get_user_by_email", broken)
+    res = client.post("/auth/login", json={"email": "a@example.com", "password": "x"})
+    assert res.status_code == 503
+    assert "database is unavailable" in res.json()["detail"]
