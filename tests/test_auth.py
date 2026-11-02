@@ -30,3 +30,19 @@ def test_login_with_wrong_password(client, user):
 def test_invalid_token_rejected(client):
     res = client.get("/auth/me", headers={"Authorization": "Bearer not-a-real-token"})
     assert res.status_code == 401
+
+
+def test_ai_endpoints_require_auth(client):
+    """Every AI endpoint reads user data, so none may be called anonymously."""
+    calls = [
+        ("get", "/ai/insights", None),
+        ("post", "/ai/chat", {"message": "hi"}),
+        ("post", "/ai/advice", {"category": "Food", "amount": 10}),
+        ("post", "/ai/query-documents", {"question": "hi"}),
+        ("post", "/ai/hybrid-search", {"question": "hi"}),
+        ("get", "/ai/deep-analysis", None),
+        ("get", "/ai/crew-analysis", None),
+    ]
+    for method, path, body in calls:
+        res = getattr(client, method)(path, json=body) if body else getattr(client, method)(path)
+        assert res.status_code in (401, 403), f"{path} returned {res.status_code}"

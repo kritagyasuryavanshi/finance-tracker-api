@@ -129,7 +129,8 @@ class AIResponse(BaseModel):
 # ─────────────────────────────────────
 @router.get("/insights", response_model=AIResponse)
 async def get_insights(
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
     # ↑ Depends(get_db) = FastAPI automatically
     #   creates a DB session and passes it here
     #   We don't manually create DB connections
@@ -150,8 +151,8 @@ async def get_insights(
     """
     try:
         # Step 1: Get data from database
-        transactions = database.get_all_transactions(db)
-        summary = database.get_summary(db)
+        transactions = database.get_all_transactions(db, user_id=current_user["id"])
+        summary = database.get_summary(db, user_id=current_user["id"])
         
         # Step 2: Handle empty data case
         if not transactions:
@@ -187,7 +188,8 @@ async def chat(
     #   validates against ChatRequest model
     #   passes as this parameter
     
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     """
     Chat with AI about your finances
@@ -209,8 +211,8 @@ async def chat(
     """
     try:
         # Get financial data as context for AI
-        transactions = database.get_all_transactions(db)
-        summary = database.get_summary(db)
+        transactions = database.get_all_transactions(db, user_id=current_user["id"])
+        summary = database.get_summary(db, user_id=current_user["id"])
         
         # Call AI chat function
         response = chat_with_ai(
@@ -235,7 +237,8 @@ async def chat(
 @router.post("/advice", response_model=AIResponse)
 async def get_advice(
     request: AdviceRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
 ):
     """
     Get AI advice for specific spending category
@@ -254,7 +257,7 @@ async def get_advice(
     """
     try:
         # Get income for percentage calculation
-        summary = database.get_summary(db)
+        summary = database.get_summary(db, user_id=current_user["id"])
         
         # Get category-specific advice
         advice = get_spending_advice(
@@ -313,7 +316,10 @@ class DocumentQueryResponse(BaseModel):
 # ─────────────────────────────────────────────────────
 
 @router.post("/upload", response_model=DocumentUploadResponse)
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user)
+):
     """
     Upload CSV file for AI to learn from
     
@@ -384,7 +390,10 @@ async def upload_document(file: UploadFile = File(...)):
 # ─────────────────────────────────────────────────────
 
 @router.post("/query-documents", response_model=DocumentQueryResponse)
-async def query_uploaded_documents(request: DocumentQueryRequest):
+async def query_uploaded_documents(
+    request: DocumentQueryRequest,
+    current_user: dict = Depends(get_current_user)
+):
     """
     Ask questions about uploaded financial data
     
@@ -437,7 +446,10 @@ async def query_uploaded_documents(request: DocumentQueryRequest):
 # ─────────────────────────────────────────────────────
 
 @router.post("/hybrid-search", response_model=DocumentQueryResponse)
-async def hybrid_search_documents(request: DocumentQueryRequest):
+async def hybrid_search_documents(
+    request: DocumentQueryRequest,
+    current_user: dict = Depends(get_current_user)
+):
     """
     Search with hybrid approach:
     - Semantic similarity

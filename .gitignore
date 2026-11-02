@@ -13,3 +13,6 @@ data/transactions.csv
 # OS
 .DS_Store
 Thumbs.db
+# Local data (never commit)
+*.db
+chroma_db/
